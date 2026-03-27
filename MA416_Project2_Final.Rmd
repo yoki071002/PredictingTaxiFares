@@ -1,0 +1,810 @@
+---
+title: "Predicting Taxi Fares: A Comparative Study of Multiple Linear and Ridge Regression Models"
+author: "Chenjie Xu, Simiao Wu, Yutong Qin"
+date: "2025-12-08"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 1. Introduction
+
+## 1.1 Project Overview
+
+Accurate fare prediction is a central problem in modern ride-hailing and taxi services. Platforms such as Uber, Lyft, and traditional taxi operators need reliable pricing models to balance customer satisfaction, driver income, and platform revenue. From a statistical point of view, taxi fares provide a natural setting for studying how distance, travel time, traffic conditions, time of day, and other trip characteristics jointly influence a continuous outcome.
+
+In this project, we build and compare Multiple Linear Regression (MLR) and Ridge Regression to predict taxi trip prices. Our primary goal is to assess how well a MLR model can explain variability in fares, and to investigate whether a Ridge Regression model can improve coefficient stability in the presence of moderate multicollinearity. To ensure a robust model specification, we further perform a comprehensive variable selection analysis employing drop-1 residuals analysis, Added-Variable Plots (AV-Plots), and Lasso Regression traces to identify potential multicollinearity and redundant predictors. Finally, the project extends to Logistic Regression, transforming the continuous fare into a binary outcome to evaluate the feasibility of a classification-based pricing strategy.
+
+Based on the data set structure, the variables candidates for this analysis are classified as follows:
+
+* Response Variable ($Y$): Trip_Price, the numerical total cost of the taxi trip.
+* Predictor Variables ($X$):
+    * Numerical Predictors:
+        1. Trip_Distance_km: The distance of the trip in kilometers.
+        2. Trip_Duration_Minutes: The total time taken for the trip.
+        3. Passenger_Count: The number of passengers during the ride.
+    * Categorical Predictors:
+        1. Traffic_Conditions: The density of traffic (Low, Medium, High)
+        2. Time_of_Day: The time segment when the trip occurred (Morning, Afternoon, Evening, Night)
+        3. Day_of_Week: The day when the trip occurred (Weekday, Weekend)
+        4. Weather: The weather when the trip occurred (Clear, Rain)
+
+While this dataset provides a structured environment for regression analysis, we acknowledge potential limitations. As the data appears to be simplified or synthetic, it may not fully capture dynamic real-world factors such as real-time surge pricing algorithms, fuel price fluctuations, or complex geographic constraints. Consequently, our findings should be interpreted with caution when generalizing to live, noise-heavy operational environments."
+
+## 1.2 Dataset Link
+
+https://www.kaggle.com/datasets/denkuznetz/taxi-price-prediction?resource=download
+
+# 2. Data Preprocessing
+
+## 2.1 Load Data
+
+```{r 1/Load Data}
+mydata = read.csv("taxi_trip_pricing.csv")
+```
+
+## 2.2 Missing Values
+
+```{r 2/Null Handling} 
+mydata = mydata[!is.na(mydata$Trip_Price), ]
+
+get_mode = function(v) {
+  uniqv = unique(na.omit(v))
+  uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+
+mydata$Trip_Distance_km[is.na(mydata$Trip_Distance_km)] = median(mydata$Trip_Distance_km, na.rm = TRUE)
+mydata$Trip_Duration_Minutes[is.na(mydata$Trip_Duration_Minutes)] = median(mydata$Trip_Duration_Minutes, na.rm = TRUE)
+mydata$Passenger_Count[is.na(mydata$Passenger_Count)] = median(mydata$Passenger_Count, na.rm = TRUE)
+
+mydata$Traffic_Conditions[is.na(mydata$Traffic_Conditions)] = get_mode(mydata$Traffic_Conditions)
+mydata$Time_of_Day[is.na(mydata$Time_of_Day)] = get_mode(mydata$Time_of_Day)
+mydata$Day_of_Week[is.na(mydata$Day_of_Week)] = get_mode(mydata$Day_of_Week)
+mydata$Weather[is.na(mydata$Weather)] = get_mode(mydata$Weather)
+
+colSums(is.na(mydata))
+```
+
+We first remove observations with missing Trip_Price, since the response is essential for model fitting. For predictor variables, rather than discarding rows with missing values—which would reduce our sample size and statistical power—we apply imputation strategies. Specifically, for continuous predictors (Trip_Distance_km, Trip_Duration_Minutes, and Passenger_Count), we impute missing values using the median of each variable, which is robust to outliers and preserves the central tendency of the data. For categorical predictors (Traffic_Conditions, Time_of_Day, Day_of_Week, and Weather), we impute missing values using the empirical mode.
+
+The colSums(is.na(mydata)) check confirms that all missing values have been handled and that the cleaned data set contains no nullentries.
+
+# 3. Multiple Linear Regression (MLR)
+
+## 3.1 Null Hypothesis
+
+To establish a statistical basis for the regression analysis, we first formulate a valid null hypothesis regarding the relationship between the selected predictors and the response variable.The null hypothesis for the MLR model can be written as
+\begin{align*}
+  &H_{0}: \beta_{1} = \beta_{2} = \dots = \beta_{k} = 0 \\
+  &H_{\alpha}: \text{At least one } \beta_j \neq 0
+\end{align*}
+
+In the context of this application, the null hypothesis ($H_{0}$) states that there is no statistically significant linear relationship between the set of predictor variables and the trip price. It implies that all regression coefficients ($\beta$) for these predictors are equal to zero. Conversely, the alternative hypothesis ($H_{\alpha}$) suggests that at least one of these predictors has a non-zero coefficient, implying a significant relationship with the trip price.
+
+## 3.2 Initial Variable Screening
+
+```{r 3/Full vs Reduced check}
+X_full = model.matrix(mydata$Trip_Price ~ mydata$Trip_Distance_km + 
+                      mydata$Trip_Duration_Minutes + mydata$Passenger_Count + 
+                      mydata$Traffic_Conditions + mydata$Time_of_Day + 
+                      mydata$Day_of_Week + mydata$Weather)
+
+Y = mydata$Trip_Price
+n = nrow(X_full)
+p = ncol(X_full)
+
+XtX_inv = solve(t(X_full) %*% X_full)
+beta_full = XtX_inv %*% t(X_full) %*% Y
+
+residuals = Y - (X_full %*% beta_full)
+MSE = sum(residuals^2) / (n - p)
+SE_beta = sqrt(diag(MSE * XtX_inv))
+t_stats = beta_full / SE_beta
+p_values = 2 * (1 - pt(abs(t_stats), df = n - p))
+
+p_values_matrix = cbind(P_Value = round(p_values, 4)) 
+print("Full Model P-values:")
+print(p_values_matrix)
+
+
+X_reduced = model.matrix(mydata$Trip_Price ~ mydata$Trip_Distance_km + 
+                          mydata$Trip_Duration_Minutes + mydata$Passenger_Count + 
+                          mydata$Traffic_Conditions + mydata$Time_of_Day)
+
+beta_reduced = solve(t(X_reduced) %*% X_reduced) %*% t(X_reduced) %*% Y
+
+residuals_reduced = Y - (X_reduced %*% beta_reduced)
+SSE_reduced = sum(residuals_reduced^2)
+SSE_full = sum(residuals^2)
+
+r = ncol(X_full) - ncol(X_reduced)
+F_stat = ((SSE_reduced - SSE_full) / r) / MSE
+
+p_val_F = 1 - pf(F_stat, df1 = r, df2 = n - p)
+
+print("Partial F-test P-value for removing Day_of_Week & Weather:")
+print(round(p_val_F, 4))
+```
+
+We first fit the X_full model that includes all predictors and examine the individual p-values. Day_of_Week and Weather exhibit very large p-values, suggesting that they make little contribution to explaining fare variation once other variables are included.
+
+Before interpreting the Partial F-test results, we define the hypothesis test for removing the predictors Day_of_Week and Weather: 
+\begin{align*} 
+  &H_{0}: \beta_{\text{Day}} = \beta_{\text{Weather}} = 0\\ 
+  &H_{\alpha}: \text{At least one of } \beta_{\text{Day}}, \beta_{\text{Weather}} \neq 0
+\end{align*}
+
+To address the hypothesis, we perform this F-test comparing the X_full model to a X_reduced model that excludes Day_of_Week and Weather. The resulting p-value for the partial F-test is large, so we fail to reject the null hypothesis that the excluded variables have zero joint effect. This supports the decision to drop Day_of_Week and Weather from further analysis.
+
+On the other hand, Trip_Distance_km and Trip_Duration_Minutes are highly significant, while several other predictors have marginal or weak significance. This pattern hints at potential multicollinearity and motivates more careful model construction.
+
+## 3.3 Final Data Construction
+
+```{r 4/Construct Final Matrix}
+clean_data = data.frame(
+  Y = mydata$Trip_Price,
+  X1 = mydata$Trip_Distance_km,
+  X2 = mydata$Trip_Duration_Minutes,
+  X3 = mydata$Passenger_Count,
+  Traffic = as.factor(mydata$Traffic_Conditions),
+  Time = as.factor(mydata$Time_of_Day)
+)
+X_traffic = model.matrix(~ Traffic, data = clean_data)[, -1]
+X_time = model.matrix(~ Time, data = clean_data)[, -1]
+
+X = cbind(1, clean_data$X1, clean_data$X2, clean_data$X3, X_traffic, X_time)
+colnames(X)[1] = "Intercept"
+colnames(X)[2:4] = c("Trip_Distance", "Trip_Duration", "Passenger_Count")
+Y = clean_data$Y
+
+n = nrow(X)
+p = ncol(X)
+```
+
+Based on the screening step, we construct a modeling matrix that retains the three numerical predictors (Trip_Distance, Trip_Duration, and Passenger_Count) and two categorical predictors (Traffic_Conditions and Time_of_Day). Each categorical variable is encoded using dummy variables, with one level serving as the baseline. The final matrix $X$ therefore contains an intercept, three numerical columns, and the dummy variables for traffic and time of day.
+
+This representation allows us to fit the MLR model using matrix algebra and later apply the same structure to construct prediction scenarios.
+
+## 3.4 OLS Model Fitting
+
+```{r 5/OLS fitting}
+XtX = t(X) %*% X
+XtX_inv = solve(XtX)
+Xty = t(X) %*% Y
+beta_hat = XtX_inv %*% Xty
+
+print("OLS model fitting result:")
+print(round(beta_hat, 4))
+
+
+y_hat = X %*% beta_hat
+residuals = Y - y_hat
+res_vec = as.numeric(residuals) 
+
+SSE = sum(res_vec^2)
+MSE = SSE / (n - p)
+var_beta = MSE * XtX_inv
+se_beta = sqrt(diag(var_beta))
+
+t_stats = beta_hat / se_beta
+p_val_t = 2 * (1 - pt(abs(t_stats), df = n - p))
+
+print("Multiple Linear Regression Original t-test:")
+print(round(p_val_t, 4))
+
+
+Y_bar = mean(Y)
+SST = sum((Y - Y_bar)^2)
+SSR = SST - SSE
+
+df_reg = p - 1
+df_error = n - p
+MSR = SSR / df_reg
+F_stat = MSR / MSE
+p_val_F = 1 - pf(F_stat, df1 = df_reg, df2 = df_error)
+
+print("Multiple Linear Regression Original F-test:")
+print(round(p_val_F, 4))
+```
+
+The T-tests show that Trip_Distance and Trip_Duration are extremely significant predictors of Trip_Price, with p-values effectively equal to $0$. In contrast, Passenger_Count and Time have relatively large p-values, which means their individual contributions to explaining price are minimal once the key predictors are accounted for.
+
+The F-test for the regression yields a p-value effectively equal to zero, approaching machine epsilon, which confirms that the overall model is highly significant and has meaningful predictive capacity. This strong result provides justification for continuing with a full diagnostic analysis of the model’s assumptions.
+
+Although we focus on significance here, it is also worth noting the direction of the relationships. The positive coefficients for Trip_Distance and Trip_Duration confirm the economic intuition that longer and farther trips result in higher fares. The high F-statistic further validates that the linear combination of these predictors effectively explains the variation in trip prices.
+
+## 3.5 Assumptions Check
+
+The reasonability of standard assumptions was checked for MLR:
+
+```{r 6.1/MLR Assumptions - Linearity}
+cor_res = apply(X[, -1], 2, function(x) cor(x, res_vec))
+cor_res
+```
+
+The correlations between each predictor and the residuals are closed to machine epsilon, suggesting that the linearity assumption is reasonable.
+
+```{r 6.2/MLR Assumptions - NormalityQuali}
+par(mfrow = c(1, 2))
+hist(res_vec, breaks = 30, main = "Figure 1: Histogram of Residuals", xlab = "Residuals", col = "lightpink")
+qqnorm(res_vec, main = "Figure 2: Normal Q-Q Plot")
+qqline(res_vec, col = "red", lwd = 2)
+par(mfrow = c(1, 1))
+```
+
+The histogram and Q-Q plot show that the residuals are roughly symmetric and bell-shaped, but the distribution exhibits heavier tails than an ideal normal distribution. In the Q-Q plot, the points deviate from the reference line at both extremes, indicating that the normality assumption is only approximately satisfied rather than fully met. This provides qualitative evidence of non-normality, even though the central portion of the distribution appears reasonably well aligned with the theoretical normal curve.
+
+```{r 6.3/MLR Assumptions - NormalityKS}
+n_res = length(res_vec)
+x_sorted = sort(res_vec)
+z_scores = (x_sorted - mean(x_sorted)) / sd(x_sorted)
+
+F0 = pnorm(z_scores)
+Fn = (1:n_res) / n_res
+Fn_prev = (0:(n_res - 1)) / n_res
+D_stat = max(max(abs(Fn - F0)), max(abs(F0 - Fn_prev)))
+crit_val = 1.36 / sqrt(n_res)
+
+print(paste("D_stat:", round(D_stat, 4)))
+print(paste("Critical Value (alpha=0.05):", round(crit_val, 4)))
+```
+
+The Kolmogorov–Smirnov (KS) test statistic exceeds the critical value at the 5 percent level, so we formally reject the null hypothesis of normal residuals. In other words, the residuals are not perfectly normally distributed according to the test. However, because the sample size is large, even small deviations from normality can trigger rejection. Under the Central Limit Theorem (CLT), inference in the MLR framework remains reasonably reliable, so the residuals can still be treated as approximately normal for practical purposes. Meanwhile, we acknowledge that the rejection of this null hypothesis is largely driven by the heavy tails observed the Q-Q plot. This non-normality further motivates the need for a variance-stabilizing transformation to improve the model's stability.
+
+```{r 6.4/MLR Assumptions - HomoscedasticityBA}
+H = X %*% XtX_inv %*% t(X)
+leverage = diag(H)
+e_studentized = residuals / sqrt(MSE * (1 - leverage))
+g = 5 
+groups = cut(as.numeric(y_hat),
+             breaks = quantile(y_hat, probs = seq(0, 1, 1/g), na.rm=TRUE),
+             include.lowest = TRUE)
+
+res_by_group = split(e_studentized, groups)
+var_j = sapply(res_by_group, function(x) var(x, na.rm = TRUE))
+n_j = sapply(res_by_group, function(x) sum(!is.na(x)))
+v_j = n_j - 1
+
+v_total = sum(v_j)
+s2_pooled = sum(v_j * var_j) / v_total
+C = 1 + (1 / (3 * (g - 1))) * (sum(1 / v_j) - 1 / v_total)
+
+T_bartlett = (v_total * log(s2_pooled) - sum(v_j * log(var_j))) / C
+p_value_bartlett = 1 - pchisq(T_bartlett, df = g - 1)
+
+cat(sprintf("Bartlett's Statistic: %.4f\n", T_bartlett))
+cat(sprintf("P-value: %.4e\n", p_value_bartlett))
+```
+
+Bartlett’s test was applied to studentized residuals to test the homoscedasticity of the data. The test yields a p-value  equal to 0, leading to the rejection of the null hypothesis of equal variances. This result indicates strong evidence of heteroscedasticity in the residuals. Because Bartlett’s test is conducted on standardized residuals, the diagnostic provides a more meaningful and statistically reliable evaluation of variance heterogeneity than using raw residuals alone.
+
+```{r 6.4/Heteroscedasticity diagram}
+Y_hat = X %*% beta_hat
+Epsilon_hat = Y - Y_hat
+par(mfrow=c(1, 1))
+plot(Y_hat, Epsilon_hat, 
+    main = "Figure 3: Fitted Values vs. Residuals",
+    xlab = "Fitted Values",
+    ylab = "Residuals",
+    pch = 19, col = "pink")
+
+abline(h = 0, col = "red", lty = 2)
+```
+
+The residuals-versus-fitted plot exhibits a clear funnel shape, where the variance of residuals increases with the fitted values. This pattern is a classic sign of severe heteroscedasticity. Consequently, the constant variance assumption is violated, and it is risk having unreliable standard errors and p-values in the original model.
+
+To address both the heteroscedasticity and the heavy-tailed residuals, a log transformation was applied to the response.
+
+```{r 6.4/Log Transformation}
+Y_log = log(Y)
+Y = Y_log 
+```
+
+Using $log(Y)$, where $Y$ equale to Trip_Prices, in place of the original response helps correct the heteroscedasticity and non-normality detected in the raw-scale model.
+
+```{r 6.4/Log Model Diagnostics}
+XtX_log = t(X) %*% X
+Xty_log = t(X) %*% Y
+beta_log = solve(XtX_log) %*% Xty_log
+y_hat_log = X %*% beta_log
+residuals_log = Y - y_hat_log
+
+par(mfrow=c(1, 1))
+plot(y_hat_log, residuals_log,
+     main = "Figure 4: Fitted Values vs. Residuals (Log-Trans)",
+     xlab = "Fitted Values",
+     ylab = "Residuals",
+     pch = 19, col = "pink")
+
+abline(h = 0, col = "red", lty = 2)
+```
+
+To verify the effectiveness of the transformation, we plot the residuals against the fitted values for the log-transformed model (Figure 4). Unlike the funnel shape observed in Figure 3, the residuals in Figure 4 are randomly scattered around zero with a relatively constant spread. This confirms that the log transformation has successfully stabilized the variance and mitigated the extreme deviations, satisfying the MLR assumptions required for reliable inference.
+
+## 3.6 OLS Fitting with Y Log
+
+```{r 7/OLS_Log}
+XtX = t(X) %*% X
+XtX_inv = solve(XtX)
+Xty = t(X) %*% Y
+beta_hat = XtX_inv %*% Xty
+
+y_hat = X %*% beta_hat
+residuals = Y - y_hat
+res_vec = as.numeric(residuals)
+
+SSE = sum(res_vec^2)
+MSE = SSE / (n - p)
+var_beta = MSE * XtX_inv
+se_beta = sqrt(diag(var_beta))
+t_stats = beta_hat / se_beta
+p_val_t = 2 * (1 - pt(abs(t_stats), df = n - p))
+
+print("Multiple Linear Regression Log-Version t-test:")
+print(round(p_val_t, 4))
+```
+
+Refitting the model with $log(Y)$ as the response considerably improves the statistical properties of the model. The p-values for most predictors decrease, indicating stronger evidence that they are associated with the $log(Y)$. Compared with the original Ordinary Least Squares(OLS) results, the log-transformed model yields stronger coefficient significance and successfully alleviates both the heteroscedasticity and the non-normality present in the initial specification.
+
+
+## 3.7 Multicollinearity Analysis
+
+```{r 8/Multicollinearity}
+get_R2_j = function(j, Xmat) {
+  y_temp = Xmat[, j]
+  X_others = Xmat[, -j, drop=FALSE]
+  XtX_aux = t(X_others) %*% X_others
+  Xty_aux = t(X_others) %*% y_temp
+  beta_aux = solve(XtX_aux) %*% Xty_aux
+  y_hat_aux = X_others %*% beta_aux
+  SSE_j = sum((y_temp - y_hat_aux)^2)
+  SST_j = sum((y_temp - mean(y_temp))^2)
+  return (1 - SSE_j / SST_j)
+}
+
+VIFs = numeric(p - 1)
+names(VIFs) = colnames(X)[-1]
+
+for (j in 2:p) {
+  R2_j = get_R2_j(j, X)
+  VIFs[j-1] = 1 / (1 - R2_j)
+}
+round(VIFs, 4)
+
+MCI = sqrt(VIFs)
+round (MCI, 4)
+```
+
+Variance Inflation Factors (VIFs) and Multicollinearity Indices (MCI) are calculated to quantify multicollinearity.The result of VIFs indicate that there is no extreme multicollinearity, but several predictors show moderate collinearity, with MCI $\approx 2.28$. Although this level of multicollinearity does not invalidate the model, it motivates the use of Ridge Regression to further stabilize the coefficient estimates.
+
+## 3.8 MLR Prediction
+
+```{r 9/Test Points}
+dist_stats = quantile(mydata$Trip_Distance_km, probs = c(0.1, 0.5, 0.9))
+dur_stats = quantile(mydata$Trip_Duration_Minutes, probs = c(0.1, 0.5, 0.9))
+
+test_df = data.frame(
+  X1 = c(dist_stats[1], dist_stats[2], dist_stats[3]),
+  X2 = c(dur_stats[1], dur_stats[2], dur_stats[3]),
+  X3 = c(1, 1, 2),
+  Traffic = c("Low", "Medium", "High"),
+  Time = c("Morning", "Afternoon", "Night")
+)
+
+test_df$Traffic = factor(test_df$Traffic, levels = levels(factor(mydata$Traffic_Conditions)))
+test_df$Time = factor(test_df$Time, levels = levels(factor(mydata$Time_of_Day)))
+X_test_traffic = model.matrix(~ Traffic, data = test_df)[ , -1, drop=FALSE]
+X_test_time = model.matrix(~ Time, data = test_df)[ , -1, drop=FALSE]
+X_test = cbind(1, test_df$X1, test_df$X2, test_df$X3, X_test_traffic, X_test_time)
+```
+
+```{r 10/MLR Prediction}
+MLR_pred_values = X_test %*% beta_hat
+
+scenarios = c("A (10%)", "B (Median)", "C (90%)")
+prices = round(exp(MLR_pred_values), 2)
+
+dists = round(test_df$X1, 1)
+durs = round(test_df$X2, 1)
+traffic_c = as.character(test_df$Traffic)
+
+cat("MLR Prediction Scenarios (Fitted with log(Price)):\n")
+cat("------------------------------------------------------------------------------\n")
+cat("Scenario \t| Dist(km) \t| Dur(min) \t| Traffic \t| MLR Price\n")
+cat("------------------------------------------------------------------------------\n")
+
+for (i in 1:3) {
+  cat(sprintf("%-10s \t| %-8.1f \t| %-8.1f \t| %-8s \t| %-8.2f\n",
+              scenarios[i], dists[i], durs[i], traffic_c[i], prices[i, 1]))
+}
+```
+
+Using the log-scale model, we construct three representative scenarios based on the $10_{th}$ percentile, $50_{th}$ percentile, and $90_{th}$ percentile values of distance and duration, combined with different traffic levels. After exponentiating the predicted log-prices, we obtain fare predictions. It is important to note that because of the log-transformation, the predictors correspond to a percentage change on the price, rather than a simple additive linear effect. The results confirm that fares increase with distance and duration, aligning with economic intuition.
+
+These predictions provide a useful baseline for comparison with the Ridge Regression model introduced in the next section.
+
+# 4. Ridge Regression
+
+## 4.1 Setup & Standardization
+
+```{r 11/Ridge Setup}
+X_no_intercept = X[, -1, drop = FALSE]
+Y_vector = as.vector(Y) 
+p_star = ncol(X_no_intercept)
+
+X_means = apply(X_no_intercept, 2, mean)
+X_sds = apply(X_no_intercept, 2, sd)
+Y_mean = mean(Y_vector)
+X_c = scale(X_no_intercept, center = X_means, scale = X_sds)
+Y_c = Y_vector - Y_mean
+```
+
+## 4.2 Hyper-parameter Tuning
+
+```{r 12/Lambda}
+X_no_intercept = X[, -1, drop = FALSE] 
+Y_vector = as.vector(Y) 
+p_star = ncol(X_no_intercept)
+n_obs = length(Y_vector)
+
+X_means = apply(X_no_intercept, 2, mean)
+X_sds = apply(X_no_intercept, 2, sd)
+Y_mean = mean(Y_vector)
+
+X_c = scale(X_no_intercept, center = X_means, scale = X_sds)
+Y_c = Y_vector - Y_mean
+
+lambdas = c(0, 1, 10, 50, 100, 500, 1000)
+Identity_matrix = diag(p_star)
+
+mse_matrix = matrix(NA, nrow = length(lambdas), ncol = 2)
+colnames(mse_matrix) = c("Lambda", "MSE")
+
+for (i in 1:length(lambdas)) {
+  L = lambdas[i]
+  XtX_plus_lambdaI = t(X_c) %*% X_c + L * Identity_matrix
+  XtY_c = t(X_c) %*% Y_c
+  beta_std = solve(XtX_plus_lambdaI, XtY_c) 
+  y_hat_c = X_c %*% beta_std
+  residuals_c = Y_c - y_hat_c
+  SSE = sum(residuals_c^2)
+  MSE_L = SSE / (n_obs - p_star - 1) 
+  mse_matrix[i, 1] = L
+  mse_matrix[i, 2] = MSE_L
+}
+
+cat("Lambda Selection Results:\n")
+cat("--------------------------------\n")
+cat("Lambda\t| MSE\n")
+cat("--------------------------------\n")
+for (i in 1:nrow(mse_matrix)) {
+  cat(sprintf("%-6.0f\t| %-8.4f\n", mse_matrix[i, 1], mse_matrix[i, 2]))
+}
+
+lambda_opt = 1
+```
+
+A grid of candidate penalty parameters $\lambda$ and the corresponding mean squared error (MSE) was evaluated for each value. When $\lambda$ increases from 0 to 1, the MSE rises by only a trivial amount of 0.001, whereas larger values of $\lambda$ result in noticeably worse model fit. Because the log-transformed OLS model already exhibits limited heteroscedasticity and only moderate multicollinearity, even $\lambda$=0 produces a stable solution. Selecting $\lambda$=1 therefore represents a conservative trade-off, whcih slightly improves coefficient stability without sacrificing predictive accuracy, and the small increase in MSE is practically negligible due to rounding effects.
+
+## 4.3 Prediction Comparison
+
+```{r 13/Ridge Prediction}
+L = 1
+XtX_plus_lambdaI = t(X_c) %*% X_c + L * Identity_matrix
+XtY_c = t(X_c) %*% Y_c
+beta_std = solve(XtX_plus_lambdaI, XtY_c)
+beta_unstd = beta_std / X_sds
+beta_0 = Y_mean - sum(beta_unstd * X_means)
+final_coeffs = c(Intercept = beta_0, beta_unstd)
+
+Ridge_pred_values = X_test %*% final_coeffs
+
+MLR_Price = round(exp(MLR_pred_values), 2)
+Ridge_Price = round(exp(Ridge_pred_values), 2)
+
+scenarios = c("A (10%)", "B (Median)", "C (90%)")
+dists = round(test_df$X1, 1)
+durs = round(test_df$X2, 1)
+
+cat("MLR vs Ridge Prediction Comparison (Fitted with log(Price)):\n")
+cat("--------------------------------------------------------------------------------\n")
+cat("Scenario \t| Dist(km) \t| Dur(min) \t| MLR Price \t| Ridge Price \t| Difference\n")
+cat("--------------------------------------------------------------------------------\n")
+
+for (i in 1:3) {
+  diff = Ridge_Price[i, 1] - MLR_Price[i, 1]
+  cat(sprintf("%-10s \t| %-8.1f \t| %-8.1f \t| %-10.2f \t| %-10.2f \t| %-8.2f\n",
+              scenarios[i], dists[i], durs[i], MLR_Price[i, 1], Ridge_Price[i, 1], diff))
+}
+```
+
+Comparing the log-scale MLR and Ridge predictions across the three scenarios shows that the two models produce almost indistinguishable fare estimates, particularly for the median case (scenario B). This close agreement indicates that the OLS model on $log(Y)$ is already very stable. In the more extreme scenarios (scenario A and scenario C), the Ridge model displays a slight shrinkage effect, pulling predictions marginally toward the overall mean. This modest adjustment reflects how Ridge Regression stabilizes coefficient estimates when predictors are correlated, without noticeably reducing predictive accuracy. Overall, the results suggest that Ridge serves primarily as a safeguard against moderate multicollinearity rather than as a significant improvement over the log-scale OLS model.
+
+# 5. Variable Selection
+
+## 5.1 Method 1: Drop-1 Analysis
+
+```{r 14/Drop-1}
+y_hat_original = X %*% beta_hat
+residuals_original = Y - y_hat_original
+original_rmse = sqrt(sum(residuals_original^2) / (n - p))
+
+vars = colnames(X)[-1]
+original_vifs = VIFs
+
+cat(sprintf("Original Model RMSE (log(Y)): %.4f\n", original_rmse))
+cat("Original Model VIFs:\n")
+print(round(original_vifs, 2))
+
+drop_results = matrix(NA, nrow = length(vars), ncol = 2)
+colnames(drop_results) = c("RMSE_%Change", "Avg_VIF_%Change")
+rownames(drop_results) = vars
+
+mylocalols = function(Xmat, Yvec) {
+    p_mat = ncol(Xmat)
+    n_mat = length(Yvec)
+    bhat = solve(t(Xmat) %*% Xmat) %*% t(Xmat) %*% Yvec
+    residuals = Yvec - (Xmat %*% bhat)
+    rmse = sqrt(sum(residuals^2) / (n_mat - p_mat))
+    return(list(bhat = bhat, rmse = rmse))
+}
+
+for (i in 1:length(vars)) {
+    var_to_drop = vars[i]
+    col_index_to_drop = which(colnames(X) == var_to_drop)
+    X_drop = X[, -col_index_to_drop, drop = FALSE]
+    M_drop = mylocalols(X_drop, Y)
+    rmse_change_pct = ((M_drop$rmse - original_rmse) / original_rmse) * 100
+    retained_vars = colnames(X_drop)[-1]
+    VIFs_drop = numeric(length(retained_vars))
+    names(VIFs_drop) = retained_vars
+    for (j in 2:ncol(X_drop)) {
+        R2_j = get_R2_j(j, X_drop)
+        VIFs_drop[j-1] = 1 / (1 - R2_j)
+    }
+    original_vifs_retained = original_vifs[retained_vars]
+    vif_diff = abs(VIFs_drop - original_vifs_retained)
+    vif_change_pct = mean(vif_diff / original_vifs_retained) * 100
+    drop_results[i, "RMSE_%Change"] = rmse_change_pct
+    drop_results[i, "Avg_VIF_%Change"] = vif_change_pct
+}
+
+cat("Dropped Var\t| RMSE Change (%)\t| Avg VIF Change (%)\n")
+cat("--------------------------------------------------------------------\n")
+for (i in 1:nrow(drop_results)) {
+    cat(sprintf("%-12s\t| %-16.4f\t| %-16.4f\n", 
+                rownames(drop_results)[i], 
+                drop_results[i, "RMSE_%Change"], 
+                drop_results[i, "Avg_VIF_%Change"]))
+}
+```
+
+The drop-one analysis evaluates how the root mean squared error (RMSE) and average VIFs change when each variable is removed from the model. Removing Trip_Distance or Trip_Duration leads to a sharp increase in RMSE with only modest changes in multicollinearity, confirming that these two predictors are central to the model’s explanatory power.
+
+In contrast, dropping Passenger_Count yields almost no change in RMSE, indicating that this variable contributes little to predictive accuracy. For some of the categorical dummies related to Traffic and Time, dropping them causes noticeable changes in VIFs but very small changes in RMSE. This suggests that there is collinearity within these groups of dummy variables and that some levels may be largely redundant in terms of unique information.
+
+## 5.2 Method 2: AV-Plot Analysis
+
+```{r 15/AV-Plot}
+vars = colnames(X)[-1] 
+
+mylocalols = function(Xmat, Yvec) {
+    bhat = solve(t(Xmat) %*% Xmat) %*% t(Xmat) %*% Yvec
+    return(list(bhat = bhat))
+}
+
+num_vars = length(vars)
+par(mfrow = c(ceiling(num_vars/2), 2), mar = c(2.5, 2.5, 1.5, 0.5)) 
+
+for (k in 1:num_vars) {
+    var_k = vars[k]
+    X_k_removed = X[, colnames(X) != var_k, drop = FALSE]
+    X_k = X[, var_k, drop = FALSE]
+    M_Y = mylocalols(X_k_removed, Y)
+    Y_pred_without_k = X_k_removed %*% M_Y$bhat
+    Y_resid = Y - Y_pred_without_k 
+    M_Xk = mylocalols(X_k_removed, X_k)
+    Xk_pred_without_k = X_k_removed %*% M_Xk$bhat
+    Xk_resid = X_k - Xk_pred_without_k 
+    
+    plot(Xk_resid, Y_resid, 
+         main = paste("AV-Plot for:", var_k),
+         pch = 19, cex = 0.5, col = "darkgreen") 
+    
+    numerator = t(Xk_resid) %*% Y_resid
+    denominator = t(Xk_resid) %*% Xk_resid
+    beta1_av = numerator[1, 1] / denominator[1, 1]
+    abline(a = 0, b = beta1_av, col = "red", lwd = 2)
+}
+par(mfrow = c(1, 1), mar = c(5.1, 4.1, 4.1, 2.1)) 
+```
+
+Added-variable (AV) plots visualize the unique linear relationship between each predictor and the response after controlling for all other predictors. The AV plots for Trip_Distance and Trip_Duration show strong, clear trends, reinforcing their importance in explaining log-prices.
+
+By contrast, the AV plot for Passenger_Count is relatively flat and scattered, consistent with its low marginal contribution. Variables of Time and Traffic display weak or noisy patterns once other variables are controlled for, which again points to redundancy and within-group collinearity.
+
+## 5.3 Method 3: Lasso Regression Analysis
+
+```{r 16/Lasso Trace}
+lambda_grid_full = c(0, 0.1, 1, 10, 50, 100, 500, 1000, 5000)
+ridge_coefficients_trace = matrix(NA, nrow = length(lambda_grid_full), ncol = ncol(X_c))
+colnames(ridge_coefficients_trace) = colnames(X_c)
+Identity_matrix = diag(ncol(X_c)) 
+
+for (i in 1:length(lambda_grid_full)) {
+    L = lambda_grid_full[i]
+    XtX_plus_lambdaI = t(X_c) %*% X_c + L * Identity_matrix
+    XtY_c = t(X_c) %*% Y_c
+    beta_std = solve(XtX_plus_lambdaI, XtY_c) 
+    ridge_coefficients_trace[i, ] = beta_std[, 1]
+}
+
+lambda_plot = lambda_grid_full[lambda_grid_full > 0]
+coeff_plot = ridge_coefficients_trace[lambda_grid_full > 0, ]
+
+matplot(lambda_plot, coeff_plot, 
+        type = "l", 
+        log = "x", 
+        xlab = expression(lambda), 
+        ylab = "Standardized Coefficient",
+        main = "Figure 5: Lasso coefficient shrinkage",
+        lwd = 2,
+        xaxt = "n")
+axis_labels = as.character(lambda_plot)
+axis(1, at = lambda_plot, labels = axis_labels, las = 2, cex.axis = 0.8)
+
+legend("topright", 
+       legend = colnames(X_c), 
+       col = 1:ncol(X_c), 
+       lty = 1:ncol(X_c), 
+       lwd = 2,
+       cex = 0.5,
+       xpd = TRUE)
+```
+
+The coefficients for Passenger_Count and some traffic and time dummies converge toward zero quickly as $\lambda$ grows. Meanwhile, the coefficients for Trip_Distance and Trip_Duration remain relatively large and decay more slowly. This behavior aligns with the findings from the drop-one analysis and AV plots, and further confirms which variables are structurally important versus redundant.
+
+## 5.4 Discussion of Findings
+
+As conclusion, the three variable-selection approaches paint a consistent picture:
+
+* Trip_Distance and Trip_Duration are the most important predictors of log-price. Removing them drastically worsens model fit, and their AV plots and shrinkage paths show strong, stable effects.
+* Passenger_Count has very limited unique explanatory power. Dropping it barely changes RMSE, its AV plot is weak, and its coefficient shrinks quickly under regularization.
+* Several dummy variables for traffic conditions and time of day exhibit redundancy and within-group collinearity. They provide some incremental explanatory information, but their individual contributions are modest once distance and duration are included.
+
+All variables are chosen to be retained in the final model. By applying Ridge Regression with $\lambda$=1, the stability of the coefficient estimates are maximized and the mild multicollinearity present among the predictors are effectively mitigated.
+
+# 6. Logistic Regression
+
+## 6.1 Hypothesis & Data Partition
+
+```{r 17/Test Split}
+median_price = median(mydata$Trip_Price)
+mydata$Price_High = ifelse(mydata$Trip_Price > median_price, 1, 0)
+
+X_logistic = X[, -1, drop=FALSE] 
+Y_logistic = mydata$Price_High 
+n_logistic = length(Y_logistic)
+
+set.seed(2025) 
+train_index = sample(1:n_logistic, size = round(0.8 * n_logistic))
+
+X_df = as.data.frame(X_logistic)
+X_train_df = X_df[train_index, ]
+Y_train = Y_logistic[train_index]
+X_test_df = X_df[-train_index, ]
+Y_test = Y_logistic[-train_index]
+
+cat(sprintf("\nBinary Response Variable 'Price_High' (1/0) created based on median price: %.2f.\n", median_price))
+cat(sprintf("Training Observations (80%%): %d\n", length(Y_train)))
+cat(sprintf("Testing Observations (20%%): %d\n", length(Y_test)))
+```
+
+To study a classification version of the problem, we define a binary outcome Price_High that equals 1 if the trip price exceeds the sample median and 0 otherwise. This transforms the continuous prediction task into a high-versus-low fare classification problem.
+
+An $80\%$ training set and a $20\%$ test set was created by using a random split. The same predictor structure as in the MLR model is used here, allowing a direct comparison between the continuous and binary modeling frameworks.
+
+## 6.2 Model Fitting & Optimization
+
+```{r 18/Logistic Model}
+logistic_model = glm(Y_train ~ ., data = X_train_df, family = binomial)
+
+coeff_matrix = summary(logistic_model)$coefficients 
+odds_ratio = exp(coeff_matrix[, "Estimate"])
+beta_hat = coef(logistic_model)
+
+cat(sprintf("%-25s | %-8s | %-10s\n", "Predictor", "P-Value", "Odds Ratio"))
+cat("----------------------------------------------------------------------------------\n")
+
+for (i in 1:nrow(coeff_matrix)) {
+    name = rownames(coeff_matrix)[i]
+    cat(sprintf("%-25s | %-8.4f | %-10.4f\n", 
+                name, 
+                coeff_matrix[i, "Pr(>|z|)"], 
+                odds_ratio[i]))
+}
+```
+
+A logistic regression model was fit on the training data with Price_High as the response. The coefficient table shows that Trip_Distance and Trip_Duration are again highly significant predictors. With odds ratios significantly greater than one, these results indicate that longer and farther trips are much more likely to fall into the high-price category.
+
+In contrast, most categorical predictors have relatively large p-values and odds ratios close to 1, suggesting limited additional power once distance and duration are included. This pattern is consistent with the earlier MLR findings and reinforces the idea that distance and duration are the primary drivers of fare level."
+
+## 6.3 Testing & Evaluation
+
+```{r 19/Accuracy Check}
+calculate_logistic_prob = function(X_mat, beta_vec) {
+  X_mat = as.matrix(X_mat)
+  log_odds = X_mat %*% beta_vec[-1] + beta_vec[1]
+  p_hat = 1 / (1 + exp(-log_odds))
+  return(p_hat)
+}
+
+p_hat_test = calculate_logistic_prob(X_test_df, beta_hat)
+SSE_test = sum((Y_test - p_hat_test)^2)
+n_test = length(Y_test)
+RMSE_test = sqrt(SSE_test / n_test)
+
+cat(sprintf("Test Set RMSE: %.4f\n", RMSE_test))
+
+logistic_metrics = list(RMSE_test = RMSE_test)
+```
+
+The model achieves an RMSE below 0.5 when predicting the high-fare probability. Since the binary outcome takes values 0 and 1, an RMSE under 0.5 indicates that the model’s probability predictions are meaningfully better than random guessing and that there is no obvious evidence of severe underfitting or overfitting.
+
+## 6.4 Real-Life Application
+
+```{r 20/Classification of Test}
+test_cases_df = data.frame(
+    Trip_Distance = c(5.9, 25.9, 45.6),       
+    Trip_Duration = c(17.4, 61.6, 106.2), 
+    Passenger_Count = c(1, 2, 4),
+    TrafficLow = c(1, 0, 0),
+    TrafficMedium = c(0, 1, 0),
+    TrafficHigh = c(0, 0, 1),
+    TimeAfternoon = c(0, 1, 0),
+    TimeEvening = c(0, 0, 0),
+    TimeMorning = c(0, 0, 1),
+    TimeNight = c(1, 0, 0)
+)
+colnames(test_cases_df) = colnames(X_train_df)
+rownames(test_cases_df) = c("A (Low)", "B (Median)", "C (High)")
+prob_predictions = calculate_logistic_prob(test_cases_df, beta_hat)
+threshold = 0.5 
+
+cat("\nPrediction Probabilities for Three Test-Points:\n")
+cat("----------------------------------------------------------\n")
+cat(sprintf("%-15s | %-12s | %-18s\n", 
+            "Scenario", "Prob(High Price)", "Predicted Class"))
+cat("----------------------------------------------------------\n")
+
+for (i in 1:nrow(test_cases_df)) {
+    predicted_class = ifelse(prob_predictions[i] > threshold, "High Price (1)", "Low Price (0)")
+    cat(sprintf("%-15s | %-16.4f | %-18s\n", 
+                rownames(test_cases_df)[i], 
+                prob_predictions[i], 
+                predicted_class))
+}
+```
+
+Regression modeling successfully predicts the probability that a trip belongs to the high-price category, denoted by $\mathbf{\hat{y}_k}$. To illustrate the practical meaning of the logistic model, we evaluate three stylized scenarios representing low, medium, and high trip conditions:
+
+* In scenario A, which features short distance, short duration, and light traffic, the predicted probability of a high price is 0.0126. This extremely low value indicates that the model is highly confident the trip belongs to the low-price class.
+* In scenario C, which involves long distance, long duration, and heavy traffic, the predicted probability is 0.9903, meaning the model classifies it as high-price with near certainty.
+* Scenario B lies near the model’s decision boundary. Its predicted probability is 0.4674, which is close to the 0.5 threshold and reflects lower classification certainty.
+These results demonstrate the logistic model’s discriminative capacity: scenarios A and C are classified with very high confidence, while scenario B naturally falls into a borderline region.
+
+In real-world applications, such probability estimates can inform dynamic pricing, capacity planning, and operational decision-making. Platforms could allocate additional vehicles to areas likely to generate high-fare trips or target borderline trips with specialized promotional strategies.
+
+# 7. Conclusion
+
+This project analyzes taxi fare data using multiple regression and classification techniques. Starting from a raw dataset with missing values, we carefully cleaned and preprocessed the data, then fitted an initial Multiple Linear Regression model with Trip_Price as the response. Diagnostic checks revealed substantial heteroscedasticity and departures from normality, which we successfully addressed using a log transformation of the response.
+
+The log-scale MLR model shows that trip distance and duration are the dominant predictors of fare, while passenger count and many categorical levels provide only limited additional explanatory power. Multicollinearity diagnostics indicate moderate, but not extreme, collinearity among the predictors. Applying Ridge Regression with a small penalty parameter ($\lambda$=1) further stabilizes the coefficient estimates without materially degrading predictive performance. Comparisons of predicted prices under MLR and Ridge models show very similar results, especially around the median scenarios.
+
+Our variable selection analysis, based on drop-one experiments, added-variable plots, and regularization paths, consistently identifies Trip_Distance and Trip_Duration as core predictors and Passenger_Count as the most redundant variable. Categorical predictors for traffic and time of day exhibit some redundancy and collinearity but still capture useful structure in the data. We therefore retain all variables in the final model and rely on ridge regularization to handle mild multicollinearity.
+
+Finally, the analysis was extended to a Logistic Regression model that classifies trips as high- or low-price based on the median fare. The logistic model achieves reasonable performance on a test set and yields intuitive probability predictions for representative scenarios. In practice, such probabilistic classifications could inform dynamic pricing and operational decisions for ride-hailing platforms.
+
+Overall, the study demonstrates a complete modeling pipeline: from data preprocessing and assumption checking, through model refinement and regularization, to variable selection and classification. The results highlight both the practical importance of distance and duration in fare prediction and the value of combining classical regression diagnostics with modern regularization techniques in applied data analysis.
